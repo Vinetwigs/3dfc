@@ -1,6 +1,5 @@
 <p align="center">
-  <strong>3DFC - 3D Frame Compressor</strong><br>
-  <sub>Lossless cold archive for render frame sequences</sub>
+  <img alt="3DFC banner" src="docs/banner.gif" width="100%">
 </p>
 
 <p align="center">

@@ -1,0 +1,30 @@
+# Local trial data (never push: hundreds of MB of PNGs)
+testdata/
+test-output/
+
+# Built binaries and release artifacts
+3dfc
+3dfc.exe
+dist/
+*.3dfc
+*.partial
+*.resume.idx
+*.resume.json
+
+# LaTeX build output
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.pdf
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
+
+# OS and editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~

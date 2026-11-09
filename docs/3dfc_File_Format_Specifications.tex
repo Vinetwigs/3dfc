@@ -1,0 +1,306 @@
+\documentclass[11pt,a4paper]{article}
+% Print form of SPEC.md, which remains the canonical reference.
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=blue!60!black, urlcolor=blue!60!black}
+
+\title{3DFC Container Specification\\{\large Version 1: normative reference for \texttt{.3dfc} files}}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This document specifies the 3DFC container format: a single-file, lossless
+archive for ordered sequences of PNG frames. It is intended for implementers
+of readers, writers, and validators.
+
+The key words ``MUST'', ``MUST NOT'', ``REQUIRED'', ``SHALL'', ``SHALL NOT'',
+``SHOULD'', ``SHOULD NOT'', ``RECOMMENDED'', ``MAY'', and ``OPTIONAL'' are to
+be interpreted as described in RFC~2119.
+
+3DFC guarantees pixel identity, not file identity: a compliant reader
+reproduces exact pixel values (including transparency). It does not preserve
+PNG file bytes, ancillary chunks, or metadata outside the pixel buffer.
+
+\section{Conventions}
+
+All multi-byte integers are unsigned little-endian. Integer widths are written
+\texttt{u8}, \texttt{u16}, \texttt{u32}, \texttt{u64}. Byte offsets in tables
+are zero-based and half-open unless stated otherwise.
+
+Pixels are stored and reconstructed as straight (non-premultiplied) 8-bit
+RGBA (NRGBA): four bytes per pixel in R, G, B, A order, rows top to bottom,
+with row stride exactly $\text{width} \times 4$ bytes. There is no row padding
+and no filtering.
+
+\section{Versions}
+
+There is a single format version, version~1, with a 40-byte header that always
+carries the source total (Section~5).
+
+A reader MUST accept version~1 and MUST reject any other version. A writer
+MUST emit version~1.
+
+\section{Overall layout}
+
+A file consists of, in order:
+
+\begin{enumerate}
+\item Header (40 bytes).
+\item Zero or more packets (Section~\ref{sec:packets}). A valid archive holds
+at least one packet when the frame count is non-zero.
+\item Names section (Section~\ref{sec:names}).
+\item Index section (Section~\ref{sec:index}).
+\item Footer, exactly the final 16 bytes (Section~\ref{sec:footer}).
+\end{enumerate}
+
+Readers locate the names and index sections through the footer, not by
+scanning packets.
+
+\section{Header}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+Bytes & Type & Field & Requirement \\
+\midrule
+0--3   & bytes & Magic \texttt{"3DFC"} & MUST match exactly \\
+4--5   & u16   & Format version (1 or 2) & Others rejected \\
+6--7   & u16   & Tile edge in px, $\ge 8$ & Decoder uses it for GoP geometry \\
+8--11  & u32   & Image width in pixels & Identical for all frames \\
+12--15 & u32   & Image height in pixels & Identical for all frames \\
+16--23 & u64   & Frame count & MUST equal names and index counts, and MUST be at least 1 \\
+24--27 & u32   & GOP length upper bound & Informative for readers \\
+28     & u8    & Flags; bit 0 = non-opaque alpha present & Informative \\
+29--31 & ---   & Reserved & Writers MUST write zero; readers MUST ignore \\
+32--39 & u64   & Source total: sum of input PNG sizes & Always present \\
+\bottomrule
+\end{tabular}
+\caption{3DFC v2 header layout.}
+\label{tab:header}
+\end{table}
+
+Bytes 32--39 are absent in version 1.
+
+\section{Packets}
+\label{sec:packets}
+
+Each packet is framed as:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Bytes & Type & Field \\
+\midrule
+0     & u8  & Packet type: 0 GoI, 1 GoP, 2 FF, 3 Raw \\
+1--4  & u32 & Payload length in bytes, $N$ \\
+5--(5+N) & bytes & Payload \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A reader MUST reject a packet whose declared length exceeds $2^{31}-1$ or
+overruns the file. Unknown packet types MUST be rejected. The \texttt{size}
+recorded in the index for a packet equals $5 + N$.
+
+\section{GoI payload (type 0)}
+
+The payload is a zstd frame which, once decompressed, is exactly
+$\text{width} \times \text{height} \times 4$ bytes of NRGBA pixel data in the
+layout of Section~2. A GoI packet fully defines one frame and starts a new
+decode chain.
+
+\section{GoP payload (type 1)}
+
+The payload is a zstd frame which, once decompressed, has this layout:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Bytes & Type & Field \\
+\midrule
+0--3 & u32 & $C$: number of changed tiles \\
+4--(4+4C) & $C \times$ u32 & Changed tile indices, ascending row-major order \\
+remainder & bytes & Concatenated residuals, tile by tile, row by row \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Tiles partition the frame into a $\lceil \text{width}/\text{tile} \rceil$ by
+$\lceil \text{height}/\text{tile} \rceil$ grid; tile index $i$ covers column
+$i \bmod nx$, row $i \div nx$. Edge tiles are clipped to the frame bounds, so
+the last column has width $\text{width}-x$ and the last row has height
+$\text{height}-y$ when those are smaller than the tile edge.
+
+Residuals are stored per byte as $(\text{current}-\text{previous}) \bmod 256$,
+where \texttt{previous} is the fully reconstructed preceding frame in the same
+chain. Reconstruction adds each residual byte to the previous frame byte
+modulo 256. A compliant decoder MUST verify that the residual section holds
+exactly the bytes implied by the listed tile rectangles, and MUST reject short
+data.
+
+\section{FF payload (type 2)}
+
+The payload is stored uncompressed (the inner streams are already compressed)
+with this layout:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Bytes & Type & Field \\
+\midrule
+0--3 & u32 & $F$: frame count of the segment \\
+4--7 & u32 & $R$: length of the RGB stream in bytes \\
+8--11 & u32 & $A$: length of the alpha stream in bytes (0 if absent) \\
+12--(12+R) & bytes & RGB stream: Matroska, lossless H.264 RGB (\texttt{x264rgb}, \texttt{qp~0}) \\
+12+R--(12+R+A) & bytes & Alpha stream if $A > 0$: Matroska, lossless H.264 grayscale (\texttt{qp~0}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Decoding yields $F$ RGB frames and, when present, $F$ single-channel frames;
+frame $k$ of the segment is recombined as RGB planes plus alpha plane (or
+alpha 255 throughout when the alpha stream is absent). Pixel values MUST
+round-trip bit-exactly; in particular, no YUV conversion is permitted in
+compliant FF segments.
+
+\section{Raw payload (type 3)}
+
+The payload is a complete source PNG file, stored verbatim. On restore it is
+written out byte-for-byte, including all ancillary chunks. This packet type
+carries 16-bit content and any group the encoder declined to compress.
+
+\section{Names section}
+\label{sec:names}
+
+\texttt{count:u64} equal to the header frame count, followed by one entry per
+frame in frame order: \texttt{len:u16} (byte length, not NUL-terminated) and
+\texttt{len} bytes of UTF-8 filename. Names MUST NOT exceed 65535 bytes.
+Names SHOULD be basenames; readers MUST treat them as
+untrusted (see Section~\ref{sec:security}).
+
+\section{Index section}
+\label{sec:index}
+
+\texttt{count:u64} equal to the header frame count, followed by one 24-byte
+record per frame in frame order:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Bytes & Type & Field \\
+\midrule
+0--7 & u64 & Byte offset of the packet start (the type byte) \\
+8--11 & u32 & Packet size ($5 + $ payload length) \\
+12 & u8 & Flags (see below) \\
+13--14 & u16 & Position of the frame inside an FF segment & MUST be 0 for non-FF frames \\
+15--22 & u64 & Frame hash (Section~\ref{sec:hashes}) \\
+23 & --- & Reserved; writers MUST write zero, readers MUST ignore \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Flag bits:
+
+\begin{description}
+\item[\texttt{0x01} Key:] the frame starts an independent decode chain (GoI
+packets and the first frame of every FF segment).
+\item[\texttt{0x02} FF:] the frame belongs to an FF segment.
+\item[\texttt{0x04} Raw:] the frame is a Raw packet.
+\end{description}
+
+The first frame of an FF segment carries \texttt{0x01} \texttt{|} \texttt{0x02}.
+Every Go run opens with a \texttt{0x01} frame whose packet type is GoI. Raw
+records MUST carry \texttt{0x04} alone, without the Key bit.
+
+\section{Hashes}
+\label{sec:hashes}
+
+Frame hashes are the first 64 bits (little-endian) of SHA-256 over:
+
+\begin{itemize}
+\item the reconstructed NRGBA pixel buffer, for GoI, GoP, and FF frames;
+\item the verbatim PNG file bytes, for Raw frames.
+\end{itemize}
+
+Hashes are integrity checks, not content identifiers.
+
+\section{Footer}
+\label{sec:footer}
+
+The final 16 bytes are \texttt{names\_offset:u64} followed by
+\texttt{index\_offset:u64}, both absolute file offsets. A reader MUST verify
+that both offsets lie within the file and that
+$\text{names\_offset} \le \text{index\_offset}$.
+
+\section{Decode algorithm}
+
+To restore frame $k$:
+
+\begin{enumerate}
+\item Read its index record. If it is a Raw frame, copy the payload to the
+output path named by the names section and stop.
+\item If it is an FF frame, decode the whole segment packet, select position
+\texttt{segPos}, recombine, and stop.
+\item Otherwise, walk backwards to the nearest record with the Key flag,
+decode forward applying GoI/GoP reconstruction, and emit frame $k$.
+\end{enumerate}
+
+Decoders MUST validate packet types against index flags and reject
+inconsistent archives.
+
+\section{Resume sidecars}
+
+Encoders MAY support interruption and resume with three sidecar files next to
+the target path \texttt{out}:
+
+\begin{itemize}
+\item \texttt{out.partial}: packet data written so far, beginning with the
+header.
+\item \texttt{out.resume.idx}: concatenated 24-byte index records for
+committed frames.
+\item \texttt{out.resume.json}: checkpoint object with \texttt{version},
+\texttt{fingerprint}, \texttt{config}, \texttt{next\_segment},
+\texttt{data\_offset}, and \texttt{entry\_count}.
+\end{itemize}
+
+The fingerprint is hex-encoded SHA-256 over, per source frame in order: name
+length (\texttt{u64le}), name bytes, and file SHA-256. The config string binds
+the format version, GOP/tile/backend/preset/fps options, and FFmpeg
+availability. A resume run MUST verify fingerprint, configuration, header
+bytes, and that the partial file and journal are at least as long as the
+checkpoint claims, truncating both to the checkpointed lengths before
+continuing. Sidecars are removed after a successful atomic commit of the final
+file.
+
+\section{Security considerations}
+\label{sec:security}
+
+Readers MUST NOT write outside the destination directory: reject absolute
+names, path separators, and empty names, and detect case-insensitive
+collisions between restored filenames. Readers SHOULD cap decompressed sizes
+(e.g.\ against $\text{width} \times \text{height} \times 4$ plus small
+overhead) and packet lengths before allocating. The 64-bit truncated hashes
+detect corruption, not malicious tampering.
+
+\section{Versioning and compatibility}
+
+Minor, backward-compatible additions use new reserved bytes or new packet
+types; readers MUST reject what they do not understand rather than guess. The
+version field is bumped only for breaking changes, at which point this
+specification is revised and reissued.
+
+\end{document}

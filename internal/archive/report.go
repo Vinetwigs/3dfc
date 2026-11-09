@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Vinetwigs
+// SPDX-License-Identifier: GPL-3.0-only
+
 package archive
 
 import "fmt"

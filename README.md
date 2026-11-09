@@ -201,3 +201,7 @@ Keep at least two independent copies of anything you cannot recreate.
 go test ./...
 go vet ./...
 ```
+
+## License
+
+Copyright (C) 2026 Vinetwigs. Licensed under GPL-3.0-only, see `LICENSE`.
